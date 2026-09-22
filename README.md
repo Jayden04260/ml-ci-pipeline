@@ -22,7 +22,7 @@ flowchart TD
 
     subgraph gate[deploy-gate.yml]
         TR[train<br/>embed corpus → index artifact] --> EV[evaluate<br/>500 held-out queries → metrics/latest.json]
-        EV --> G{gate<br/>any gated metric dropped<br/>more than 0.01 vs baseline.json?}
+        EV --> G{gate<br/>any gated metric with a<br/>significant drop over 0.01<br/>vs baseline.json?}
     end
 
     G -- yes, no accept-regression label --> RED[❌ check fails<br/>PR blocked]
@@ -35,20 +35,24 @@ flowchart TD
     P -- no --> K[keep old baseline<br/>ratchet holds]
 ```
 
-Every run posts a metric table to the workflow's job summary:
+Every PR gets the gate's metric table as a comment (one comment,
+updated in place on each push), and every run has it in the job
+summary:
 
-| metric | baseline | candidate | delta | gated | |
-|---|---|---|---|---|---|
-| top1 | 0.4180 | 0.3760 | -0.0420 | yes | FAIL |
-| top3 | 0.5980 | 0.5760 | -0.0220 | no | down |
-| top5 | 0.6840 | 0.6600 | -0.0240 | yes | FAIL |
-| mrr | 0.5169 | 0.4814 | -0.0355 | yes | FAIL |
-| heading_top1 | 0.5580 | 0.4860 | -0.0720 | no | down |
-| chapter_top1 | 0.7520 | 0.7100 | -0.0420 | no | down |
+| metric | baseline | candidate | delta | 95% CI of delta | gated | |
+|---|---|---|---|---|---|---|
+| top1 | 0.4180 | 0.3760 | -0.0420 | [-0.0780, -0.0040] | yes | FAIL |
+| top3 | 0.5980 | 0.5760 | -0.0220 | [-0.0520, +0.0080] | no | down |
+| top5 | 0.6840 | 0.6600 | -0.0240 | [-0.0500, +0.0020] | yes | down, not significant |
+| mrr | 0.5169 | 0.4814 | -0.0355 | [-0.0612, -0.0102] | yes | FAIL |
+| heading_top1 | 0.5580 | 0.4860 | -0.0720 | - | no | down |
+| chapter_top1 | 0.7520 | 0.7100 | -0.0420 | - | no | down |
 
 (Real output, not a mock-up: this is what the gate reports if
 cross-encoder re-ranking is switched off - a plausible "simplify the
-pipeline" change that quietly costs 4 points of top-1 accuracy.)
+pipeline" change that quietly costs 4 points of top-1 accuracy. Note
+top-5: it dropped 2.4 points, but its confidence interval crosses zero,
+so on its own that drop isn't treated as evidence of a worse model.)
 
 ## Design decisions
 
@@ -68,19 +72,40 @@ review, not a different random draw. `evaluate.check_no_leakage` also
 fails the run outright if any eval query appears verbatim in the index,
 which would silently inflate every number.
 
-**The gate rule** (`model/gate.py`): each of `top1`, `top5` and `mrr`
-may drop at most **0.01** (one percentage point = 5 of 500 queries)
-below baseline. Absolute points rather than relative %, so the rule
-means the same for a 0.42 metric as a 0.68 one. Heading/chapter
-accuracy are reported but not gated - they mostly move with top-1. A
-different eval-set size is reported as *not comparable* rather than
-pass or fail.
+**The gate rule** (`model/gate.py`): `top1`, `top5` or `mrr` counts as
+regressed only if it **both** dropped more than **0.01** below baseline
+(one percentage point = 5 of 500 queries) **and** the drop is
+statistically significant - the 95% paired-bootstrap confidence interval
+of the change lies entirely below zero.
+
+- *Why a tolerance:* a significant but tiny drop isn't worth blocking a
+  PR over. Absolute points rather than relative %, so the rule means the
+  same for a 0.42 metric as a 0.68 one.
+- *Why significance:* on 500 queries, a 1-point drop is 5 questions.
+  Most queries score identically under both models, so what matters is
+  how many changed and in which direction - 16 got worse while 10 got
+  better is a very different story from 6 worse and none better, even
+  though both net out to about -1 point. The bootstrap resamples queries
+  with each query's before/after pair kept together, which measures
+  exactly that. It's seeded, so a given pair of results always gets the
+  same verdict.
+- Heading/chapter accuracy are reported but not gated - they mostly move
+  with top-1.
+
+**The eval set has to match exactly.** Each result records a sha256 of
+the exact query list (`eval_set_sha256`). If it differs from the
+baseline's - e.g. a refreshed data snapshot changed which titles are
+held out, even with the same count - the gate reports *not comparable*
+instead of a misleading pass or fail, and the PR needs
+`accept-regression` to set a new baseline. A change to the *index* data
+alone (same queries) is still compared, and flagged in the report.
 
 **The baseline ratchets.** After a successful deploy, the baseline is
 only replaced if the new model is at least as good on *every* gated
-metric. A PR with a within-tolerance 0.8-point drop passes and ships,
-but the bar stays where it was - otherwise a series of individually
-acceptable small drops could walk accuracy down with every PR green.
+metric. A PR whose drop is within tolerance, or not significant, passes
+and ships - but the bar stays where it was. Repeated small drops keep
+being measured against the same baseline, so they add up until they're
+significant, instead of each one quietly lowering the bar.
 
 **Deliberate regressions are explicit.** Sometimes a regression is the
 right call (a faster or smaller model that loses a point). Label the PR
@@ -148,7 +173,7 @@ model/
 tests/              gate rules, metric maths, artifact shape, leakage,
                     classifier unit tests
 metrics/
-  baseline.json     the numbers a PR has to hold
+  baseline.json     the numbers a PR has to hold, + per-query ranks
 data/               UK Trade Tariff reference snapshots
 ```
 

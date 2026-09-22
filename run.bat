@@ -93,7 +93,7 @@ type metrics\baseline.json
 goto done
 
 :gate_failed
-echo RESULT: BLOCKED - at least one gated metric dropped more than 0.01.
+echo RESULT: BLOCKED - a gated metric had a significant drop of more than 0.01.
 echo In CI this PR would get a red check and could not deploy.
 goto done
 

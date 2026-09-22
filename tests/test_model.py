@@ -127,6 +127,15 @@ def test_evaluate_perfect_index_scores_one(fake_embeddings):
     refs = [_ref(f"{i:02d}01000000", f"product number {i}") for i in range(10)]
     index = ReferenceIndex(_fake_embed_texts([r.title for r in refs]), refs)
 
-    metrics = evaluate.evaluate(index, refs, use_rerank=False)
+    metrics, ranks = evaluate.evaluate(index, refs, use_rerank=False)
     assert metrics["top1"] == 1.0
     assert metrics["mrr"] == 1.0
+    assert ranks == [1] * len(refs)
+
+
+def test_eval_set_fingerprint_changes_with_the_queries_not_just_their_count():
+    a = [_ref("0101000000", "horses"), _ref("0202000000", "beef")]
+    b = [_ref("0101000000", "horses"), _ref("0303000000", "fish")]
+    assert evaluate.eval_set_fingerprint(a) == evaluate.eval_set_fingerprint(list(a))
+    assert evaluate.eval_set_fingerprint(a) != evaluate.eval_set_fingerprint(b)
+    assert evaluate.eval_set_fingerprint(a) != evaluate.eval_set_fingerprint(a[::-1])

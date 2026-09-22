@@ -7,3 +7,5 @@ __pycache__/
 artifacts/
 metrics/latest.json
 metrics/demo_regression.json
+metrics/gate_summary.md
+comment.md

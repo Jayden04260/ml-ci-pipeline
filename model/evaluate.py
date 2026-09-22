@@ -22,6 +22,7 @@ Run it directly (after python -m model.train):
 """
 
 import argparse
+import hashlib
 import json
 import random
 from pathlib import Path
@@ -57,6 +58,19 @@ def check_no_leakage(index: ReferenceIndex, eval_refs: list[Reference]) -> None:
         raise ValueError(f"{len(leaked)} eval queries are present in the index, e.g. {leaked[0]}")
 
 
+def eval_set_fingerprint(eval_refs: list[Reference]) -> str:
+    """
+    sha256 over the exact (title, code) query list, in order. gate.py only
+    compares two runs whose fingerprints match: the per-query ranks are
+    paired by position, and a refreshed data snapshot can change which
+    queries are held out without changing how many there are.
+    """
+    digest = hashlib.sha256()
+    for ref in eval_refs:
+        digest.update(f"{ref.title}\t{ref.code}\n".encode())
+    return digest.hexdigest()
+
+
 def rank_of_correct_code(candidates: list[tuple[Reference, float]], expected_code: str) -> int | None:
     for rank, (ref, _score) in enumerate(candidates, start=1):
         if ref.code == expected_code:
@@ -89,7 +103,11 @@ def compute_metrics(
     }
 
 
-def evaluate(index: ReferenceIndex, eval_refs: list[Reference], use_rerank: bool = True) -> dict[str, float]:
+def evaluate(
+    index: ReferenceIndex, eval_refs: list[Reference], use_rerank: bool = True
+) -> tuple[dict[str, float], list[int | None]]:
+    """Returns (metrics, per-query ranks) - the ranks are what gate.py's
+    significance test resamples."""
     queries = [ref.title for ref in eval_refs]
     query_vectors = embed_texts(queries)
 
@@ -104,7 +122,7 @@ def evaluate(index: ReferenceIndex, eval_refs: list[Reference], use_rerank: bool
         ranks.append(rank_of_correct_code(deduped, expected.code))
         top1.append(deduped[0][0] if deduped else None)
 
-    return compute_metrics(ranks, eval_refs, top1)
+    return compute_metrics(ranks, eval_refs, top1), ranks
 
 
 def main() -> None:
@@ -121,17 +139,23 @@ def main() -> None:
     eval_refs = eval_queries(args.max_queries)
     check_no_leakage(index, eval_refs)
 
-    metrics = evaluate(index, eval_refs, use_rerank=not args.no_rerank)
+    metrics, ranks = evaluate(index, eval_refs, use_rerank=not args.no_rerank)
     result = {
         # Rounded so the committed baseline diffs cleanly and last-bit
         # float noise between machines can't masquerade as a change.
         "metrics": {name: round(value, 4) for name, value in metrics.items()},
         "n_queries": len(eval_refs),
+        "eval_set_sha256": eval_set_fingerprint(eval_refs),
         "model": {k: manifest.get(k) for k in ("embedding_model", "rerank_model", "data_sha256", "git_sha")},
     }
 
     args.out.parent.mkdir(parents=True, exist_ok=True)
-    args.out.write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
+    # Per-query ranks go last, on one line - 500 entries would otherwise
+    # make the committed baseline 500 lines longer than the part a human
+    # actually reads.
+    text = json.dumps(result, indent=2)
+    text = text[: text.rindex("\n}")] + ',\n  "per_query_ranks": ' + json.dumps(ranks) + "\n}\n"
+    args.out.write_text(text, encoding="utf-8")
     print(json.dumps(result["metrics"], indent=2))
 
 

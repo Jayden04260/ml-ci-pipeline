@@ -37,7 +37,8 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      pull-requests: read
+      # write: to post the gate's metric table as a PR comment.
+      pull-requests: write
     outputs:
       allow_regression: ${{ steps.allow.outputs.allow }}
     steps:
@@ -91,7 +92,28 @@ jobs:
       - name: Regression gate
         run: |
           python -m model.gate check --latest metrics/latest.json \
+            --summary-out metrics/gate_summary.md \
             ${{ steps.allow.outputs.allow == 'true' && '--allow-regression' || '' }}
+
+      # One sticky comment per PR: re-runs edit the bot's previous comment
+      # rather than stacking a new one per push. continue-on-error because
+      # PRs from forks get a read-only token and can't comment - the job
+      # summary still has the same table.
+      - name: Comment on PR
+        if: always() && github.event_name == 'pull_request' && hashFiles('metrics/gate_summary.md') != ''
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          {
+            cat metrics/gate_summary.md
+            echo ""
+            echo "<sub>Commit ${GITHUB_SHA::7} - [workflow run]($RUN_URL)</sub>"
+          } > comment.md
+          gh pr comment "$PR_NUMBER" --body-file comment.md --edit-last --create-if-none
 
       # Uploaded even on failure so a red gate still leaves its numbers
       # behind to inspect.
