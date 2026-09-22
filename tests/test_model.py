@@ -76,6 +76,14 @@ def test_train_writes_a_loadable_artifact_with_matching_shapes(tmp_path, fake_em
     assert len(manifest["data_sha256"]) == 64
 
 
+def test_data_fingerprint_ignores_line_endings(tmp_path):
+    # git on Windows checks data out with CRLF; CI (Linux) gets LF
+    crlf, lf = tmp_path / "crlf.json", tmp_path / "lf.json"
+    crlf.write_bytes(b'[\r\n  {"code": "1"}\r\n]\r\n')
+    lf.write_bytes(b'[\n  {"code": "1"}\n]\n')
+    assert train.data_fingerprint([crlf]) == train.data_fingerprint([lf])
+
+
 def test_load_artifact_rejects_mismatched_rows(tmp_path):
     train.save_artifact(tmp_path, np.zeros((3, DIM), dtype=np.float32), [_ref("0000000001")], {})
     with pytest.raises(ValueError):
