@@ -28,7 +28,7 @@ from model.rerank import rerank as rerank_candidates
 # distinct codes. Wider than top_k on purpose - several of these raw
 # hits often collapse into the same code once deduplicated, so top_k
 # alone wouldn't leave enough room for top_k *distinct* codes to survive.
-SEARCH_POOL = 20
+SEARCH_POOL = 5
 
 # Below this score gap between the top and second candidate, treat the
 # classification as low-confidence. Picked from eval_classification.py's
