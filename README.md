@@ -31,7 +31,7 @@ flowchart TD
     M --> GATE2[same train → evaluate → gate]
     GATE2 --> D[deploy<br/>versioned release artifact]
     D --> P{candidate ≥ baseline<br/>on every gated metric?}
-    P -- yes --> B[commit new baseline.json]
+    P -- yes --> B[publish new baseline<br/>to ml-baseline branch]
     P -- no --> K[keep old baseline<br/>ratchet holds]
 ```
 
@@ -136,7 +136,10 @@ train + evaluate is ~4 minutes.
 
 500 held-out UK Trade Tariff reference titles; matches the numbers
 published by hs-code-classifier for the same configuration.
-`metrics/baseline.json` is the source of truth and is updated by CI.
+The live baseline is `baseline.json` on the
+[`ml-baseline`](../../tree/ml-baseline) branch, updated by CI after each
+deploy. `metrics/baseline.json` on main is the seed it started from, and
+what local runs compare against.
 
 ## Run it locally
 
@@ -173,7 +176,7 @@ model/
 tests/              gate rules, metric maths, artifact shape, leakage,
                     classifier unit tests
 metrics/
-  baseline.json     the numbers a PR has to hold, + per-query ranks
+  baseline.json     seed baseline (live one: ml-baseline branch)
 data/               UK Trade Tariff reference snapshots
 ```
 
@@ -183,8 +186,9 @@ data/               UK Trade Tariff reference snapshots
   (see hs-code-classifier's README for the smaller realistic-description
   eval). The gate protects against regressions *on this benchmark* -
   it's only as good a proxy as the benchmark is.
-- Branch protection must mark `Deploy gate / evaluate` as a required
-  check for the gate to actually block merging; that's a repo setting,
-  not something a workflow file can enforce. If main is protected
-  against direct pushes, the baseline-commit step needs a bypass (or a
-  PAT / GitHub App token) to push.
+- The gate only blocks merging because `Deploy gate / evaluate` is a
+  required status check in main's branch protection - a repo setting,
+  not something a workflow file can enforce. That protection is also
+  why the baseline lives on its own `ml-baseline` branch: the workflow's
+  `GITHUB_TOKEN` can't push past a required check, so it couldn't
+  commit a new baseline to main.
