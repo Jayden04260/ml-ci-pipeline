@@ -128,6 +128,11 @@ pytest -v
 ruff check .
 ```
 
+On Windows, double-click `run.bat` instead (creates `.venv` on first
+run). It has a menu for the full pipeline, a simulated regression
+(re-ranking switched off, so you can watch the gate block it), tests
+only, and showing the baseline. `run.bat 2` runs one option and exits.
+
 ## Repo layout
 
 ```

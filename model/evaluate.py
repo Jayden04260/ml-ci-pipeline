@@ -112,13 +112,16 @@ def main() -> None:
     parser.add_argument("--artifact", type=Path, default=ARTIFACT_DIR)
     parser.add_argument("--out", type=Path, default=Path("metrics/latest.json"))
     parser.add_argument("--max-queries", type=int, default=MAX_EVAL_QUERIES)
+    # Skips cross-encoder re-ranking - a deliberately worse model, for
+    # seeing the gate fail locally (run.bat option 2) without editing code.
+    parser.add_argument("--no-rerank", action="store_true")
     args = parser.parse_args()
 
     index, manifest = load_artifact(args.artifact)
     eval_refs = eval_queries(args.max_queries)
     check_no_leakage(index, eval_refs)
 
-    metrics = evaluate(index, eval_refs)
+    metrics = evaluate(index, eval_refs, use_rerank=not args.no_rerank)
     result = {
         # Rounded so the committed baseline diffs cleanly and last-bit
         # float noise between machines can't masquerade as a change.
