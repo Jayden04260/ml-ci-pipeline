@@ -1,0 +1,194 @@
+name: Deploy gate
+
+# evaluate -> gate -> deploy -> promote baseline.
+#
+# On a PR: build the model, evaluate it, and fail the check if any gated
+# metric regressed against metrics/baseline.json (see model/gate.py).
+# On main: the same gate again (so a direct push can't skip it), then
+# ship the artifact, then ratchet the baseline forward.
+#
+# A deliberate regression is accepted by labelling the PR
+# `accept-regression` (or running this workflow manually with
+# accept_regression) - the gate then reports but doesn't block, and the
+# baseline is reset to the new model's numbers on merge.
+
+on:
+  pull_request:
+    branches: [main]
+    # labeled/unlabeled so adding `accept-regression` re-runs the gate.
+    types: [opened, synchronize, reopened, labeled, unlabeled]
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      accept_regression:
+        description: Ship and reset the baseline even if metrics regressed
+        type: boolean
+        default: false
+
+concurrency:
+  group: deploy-gate-${{ github.ref }}
+  # Superseded PR pushes can be cancelled; runs on main must finish in
+  # order so baseline commits never race each other.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  evaluate:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      allow_regression: ${{ steps.allow.outputs.allow }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Cache Hugging Face models
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/huggingface
+          key: hf-${{ hashFiles('model/embeddings.py', 'model/rerank.py') }}
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install --extra-index-url https://download.pytorch.org/whl/cpu -r requirements.txt
+
+      - name: Check for an accepted regression
+        id: allow
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT: ${{ github.event_name }}
+          PR_LABELS: ${{ toJson(github.event.pull_request.labels.*.name) }}
+          DISPATCH_INPUT: ${{ inputs.accept_regression }}
+        run: |
+          case "$EVENT" in
+            pull_request)
+              allow=$(echo "$PR_LABELS" | jq 'any(.[]; . == "accept-regression")') ;;
+            push)
+              # The label lives on the PR, not the merge commit - look up
+              # which PR this commit came from.
+              allow=$(gh api "repos/$GITHUB_REPOSITORY/commits/$GITHUB_SHA/pulls" \
+                --jq 'any(.[].labels[].name; . == "accept-regression")') ;;
+            workflow_dispatch)
+              allow="$DISPATCH_INPUT" ;;
+          esac
+          echo "allow=${allow:-false}" >> "$GITHUB_OUTPUT"
+          echo "accept-regression: ${allow:-false}"
+
+      - name: Train (build index artifact)
+        run: python -m model.train
+
+      - name: Evaluate
+        run: python -m model.evaluate --out metrics/latest.json
+
+      - name: Regression gate
+        run: |
+          python -m model.gate check --latest metrics/latest.json \
+            ${{ steps.allow.outputs.allow == 'true' && '--allow-regression' || '' }}
+
+      # Uploaded even on failure so a red gate still leaves its numbers
+      # behind to inspect.
+      - name: Upload metrics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: metrics
+          path: metrics/latest.json
+          if-no-files-found: ignore
+
+      - name: Upload model artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: model
+          path: artifacts/
+
+  deploy:
+    needs: evaluate
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    environment: production
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: model
+          path: release/model
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: metrics
+          path: release
+
+      # Mock deploy: the release is the versioned, gate-approved bundle
+      # (index + manifest + the metrics it passed with), kept as a
+      # 90-day workflow artifact. A real target slots in here instead -
+      # e.g. `aws s3 cp release/ s3://<bucket>/models/$GITHUB_SHA/
+      # --recursive` then `aws lambda update-function-configuration` to
+      # point the serving Lambda at it, as in emotisense/churnwatch.
+      - name: Deploy (mock)
+        run: |
+          echo "Deploying model for $GITHUB_SHA"
+          cat release/model/manifest.json
+          {
+            echo "## Deployed"
+            echo ""
+            echo "Commit \`$GITHUB_SHA\` - release artifact \`release-$GITHUB_SHA\`"
+            echo ""
+            echo '```json'
+            cat release/latest.json
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-${{ github.sha }}
+          path: release/
+          retention-days: 90
+
+  promote-baseline:
+    needs: [evaluate, deploy]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: metrics
+          path: metrics
+
+      # gate.py is stdlib-only, so no dependency install needed here.
+      - name: Update baseline
+        run: |
+          python -m model.gate update-baseline --latest metrics/latest.json \
+            ${{ needs.evaluate.outputs.allow_regression == 'true' && '--reset' || '' }}
+
+      # Pushes made with GITHUB_TOKEN don't trigger new workflow runs,
+      # so this commit can't loop back into the gate.
+      - name: Commit baseline
+        run: |
+          if git diff --quiet metrics/baseline.json; then
+            echo "Baseline unchanged - nothing to commit."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add metrics/baseline.json
+          git commit -m "Update model baseline to ${GITHUB_SHA::7}"
+          git push

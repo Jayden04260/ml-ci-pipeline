@@ -1,0 +1,17 @@
+{
+  "metrics": {
+    "top1": 0.418,
+    "top3": 0.598,
+    "top5": 0.684,
+    "mrr": 0.5169,
+    "heading_top1": 0.558,
+    "chapter_top1": 0.752
+  },
+  "n_queries": 500,
+  "model": {
+    "embedding_model": "all-MiniLM-L6-v2",
+    "rerank_model": "cross-encoder/ms-marco-MiniLM-L-6-v2",
+    "data_sha256": "4ca019df2a13f6f2e12a3439ca6903f1735eeedab07fb442e549a44685d8f75e",
+    "git_sha": null
+  }
+}
