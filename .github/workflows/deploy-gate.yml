@@ -89,6 +89,18 @@ jobs:
       - name: Evaluate
         run: python -m model.evaluate --out metrics/latest.json
 
+      # The live baseline lives on the unprotected ml-baseline branch (see
+      # promote-baseline). metrics/baseline.json on main is only the seed,
+      # used before that branch exists and by local runs.
+      - name: Fetch current baseline
+        run: |
+          if git fetch --depth=1 origin ml-baseline; then
+            git show FETCH_HEAD:baseline.json > metrics/baseline.json
+            echo "Baseline: ml-baseline branch"
+          else
+            echo "Baseline: seed metrics/baseline.json (no ml-baseline branch yet)"
+          fi
+
       - name: Regression gate
         run: |
           python -m model.gate check --latest metrics/latest.json \
@@ -195,22 +207,37 @@ jobs:
           name: metrics
           path: metrics
 
+      - name: Fetch current baseline
+        run: |
+          if git fetch --depth=1 origin ml-baseline; then
+            git show FETCH_HEAD:baseline.json > metrics/baseline.json
+          fi
+
       # gate.py is stdlib-only, so no dependency install needed here.
       - name: Update baseline
         run: |
           python -m model.gate update-baseline --latest metrics/latest.json \
             ${{ needs.evaluate.outputs.allow_regression == 'true' && '--reset' || '' }}
 
-      # Pushes made with GITHUB_TOKEN don't trigger new workflow runs,
-      # so this commit can't loop back into the gate.
-      - name: Commit baseline
+      # Published to the ml-baseline branch, not main: main is protected
+      # with the gate as a required check, and a GITHUB_TOKEN push can't
+      # bypass that. Pushes made with GITHUB_TOKEN also don't trigger new
+      # workflow runs, so this can't loop back into the gate.
+      - name: Publish baseline
         run: |
-          if git diff --quiet metrics/baseline.json; then
-            echo "Baseline unchanged - nothing to commit."
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          if git fetch --depth=1 origin ml-baseline; then
+            git worktree add -B ml-baseline ../ml-baseline FETCH_HEAD
+          else
+            git worktree add --orphan -b ml-baseline ../ml-baseline
+          fi
+          cp metrics/baseline.json ../ml-baseline/baseline.json
+          cd ../ml-baseline
+          git add baseline.json
+          if git diff --cached --quiet; then
+            echo "Baseline unchanged - nothing to publish."
             exit 0
           fi
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add metrics/baseline.json
-          git commit -m "Update model baseline to ${GITHUB_SHA::7}"
-          git push
+          git commit -m "Baseline from ${GITHUB_SHA::7}"
+          git push origin ml-baseline
