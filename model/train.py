@@ -49,10 +49,13 @@ ARTIFACT_DIR = Path(__file__).parent.parent / "artifacts"
 
 def data_fingerprint(paths: list[Path]) -> str:
     """sha256 over the input data files, so a metrics change can be traced
-    to a data change rather than a code change (or ruled out as one)."""
+    to a data change rather than a code change (or ruled out as one).
+    Line endings are normalized first: git on Windows checks these files
+    out with CRLF, and the same data must fingerprint the same locally
+    and in CI."""
     digest = hashlib.sha256()
     for path in paths:
-        digest.update(path.read_bytes())
+        digest.update(path.read_bytes().replace(b"\r\n", b"\n"))
     return digest.hexdigest()
 
 
