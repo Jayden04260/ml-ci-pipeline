@@ -54,6 +54,26 @@ pipeline" change that quietly costs 4 points of top-1 accuracy. Note
 top-5: it dropped 2.4 points, but its confidence interval crosses zero,
 so on its own that drop isn't treated as evidence of a worse model.)
 
+### See it block a real PR
+
+[**PR #3**](https://github.com/Jayden04260/ml-ci-pipeline/pull/3) is a
+deliberate demo, left closed with its checks intact: re-rank only the
+top 5 cosine candidates instead of 20 - a plausible "make re-ranking 4x
+cheaper" change. The gate's comment on it:
+
+| metric | baseline | candidate | delta | 95% CI of delta | gated | |
+|---|---|---|---|---|---|---|
+| top1 | 0.4180 | 0.4360 | +0.0180 | [-0.0040, +0.0400] | yes | up |
+| top5 | 0.6840 | 0.6400 | -0.0440 | [-0.0720, -0.0200] | yes | FAIL |
+| mrr | 0.5169 | 0.5150 | -0.0019 | [-0.0207, +0.0154] | yes | down |
+
+Top-1 accuracy went **up**, so anyone judging the change by its headline
+number would approve it. But top-5 dropped 4.4 points, significantly:
+for 22 more of the 500 eval queries, the correct code no longer appears
+among the candidates at all. The gate failed, and because
+`Deploy gate / evaluate` is a required check on `main`, GitHub blocked
+the merge.
+
 ## Design decisions
 
 **What "training" means here.** There are no fine-tuned weights - the
@@ -126,7 +146,8 @@ of this repo is the gate in front of the deploy, not the deploy itself.
 
 **CI cost.** CPU-only torch wheel (skips ~2GB of CUDA libraries), pip
 and Hugging Face model caches keyed on the model-name files. A full
-train + evaluate is ~4 minutes.
+train + evaluate takes about a minute on a GitHub runner with warm
+caches (~4 minutes on a small laptop).
 
 ## Current baseline
 
